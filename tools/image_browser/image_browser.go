@@ -186,6 +186,7 @@ type imageBrowserTool struct {
 	ticker             *time.Ticker
 	isRunning          bool
 	fullscreenWin      fyne.Window
+	fullscreenImage    *scalableImage
 }
 
 func (t *imageBrowserTool) Title() string       { return "图片随机浏览器" }
@@ -257,6 +258,10 @@ func (t *imageBrowserTool) toggle() {
 		if t.ticker != nil {
 			t.ticker.Stop()
 		}
+		// 如果全屏窗口存在，则关闭它
+		if t.fullscreenWin != nil {
+			t.fullscreenWin.Close()
+		}
 		t.isRunning = false
 		t.startButton.SetText("开始")
 		t.startButton.SetIcon(theme.MediaPlayIcon())
@@ -264,7 +269,7 @@ func (t *imageBrowserTool) toggle() {
 		t.updateStatus(fmt.Sprintf("已暂停。共 %d 张图片。", len(t.imagePaths)), false)
 	} else {
 		if t.selectedFolder == "" {
-			t.updateStatus("错误: 请先选择一个文件夹。", true)
+			t.updateStatus("请先选择一个文件夹。", true)
 			return
 		}
 		if len(t.imagePaths) == 0 {
@@ -319,51 +324,85 @@ func (t *imageBrowserTool) startPlayback() {
 }
 func (t *imageBrowserTool) showRandomImage() {
 	if len(t.imagePaths) == 0 {
+		// 清理主窗口的图片
 		t.displayWidget.SetImage(nil, "")
+		// 如果全屏窗口存在，也清理它
+		if t.fullscreenImage != nil {
+			t.fullscreenImage.SetImage(nil, "")
+		}
 		t.updateStatus("没有更多图片了。", false)
 		return
 	}
+
 	randomIndex := rand.Intn(len(t.imagePaths))
 	randomPath := t.imagePaths[randomIndex]
+
 	file, err := os.Open(randomPath)
 	if err != nil {
+		// 处理错误...（为了简洁省略）
 		t.updateStatus(fmt.Sprintf("无法打开图片: %v", err), true)
+		// 从列表中移除有问题的图片，避免重复失败
+		t.imagePaths = append(t.imagePaths[:randomIndex], t.imagePaths[randomIndex+1:]...)
+		go fyne.Do(t.showRandomImage) // 尝试下一张
 		return
 	}
 	defer file.Close()
+
 	img, _, err := image.Decode(file)
 	if err != nil {
+		// 处理错误...（为了简洁省略）
 		t.updateStatus(fmt.Sprintf("无法解码图片: %v", err), true)
+		t.imagePaths = append(t.imagePaths[:randomIndex], t.imagePaths[randomIndex+1:]...)
+		go fyne.Do(t.showRandomImage) // 尝试下一张
 		return
 	}
+
+	// **核心修改：同时更新两个控件**
 	t.displayWidget.SetImage(img, randomPath)
+	if t.fullscreenImage != nil {
+		t.fullscreenImage.SetImage(img, randomPath)
+	}
 }
 func (t *imageBrowserTool) toggleFullscreen() {
+	// 如果全屏窗口已存在，则关闭它
 	if t.fullscreenWin != nil {
 		t.fullscreenWin.Close()
 		return
 	}
+
+	// 如果没有图片，则不进入全屏
 	t.displayWidget.mu.RLock()
 	img := t.displayWidget.img
+	path := t.displayWidget.path
 	t.displayWidget.mu.RUnlock()
 	if img == nil {
 		return
 	}
+
+	// 创建一个新的 scalableImage 用于全屏显示
+	// 注意这里也传入了 t，这样右键菜单等功能依然能正常工作
+	t.fullscreenImage = newScalableImage(t)
+	t.fullscreenImage.SetImage(img, path) // 使用当前图片初始化
+
+	// 创建新窗口
 	win := fyne.CurrentApp().NewWindow("全屏图片查看 (按 ESC 退出)")
 	t.fullscreenWin = win
+
 	win.SetOnClosed(func() {
-		t.imageHostContainer.Objects = []fyne.CanvasObject{t.displayWidget}
-		t.imageHostContainer.Refresh()
 		t.fullscreenWin = nil
+		t.fullscreenImage = nil
 	})
-	t.imageHostContainer.Objects = nil
-	t.imageHostContainer.Refresh()
-	win.SetContent(t.displayWidget)
+
+	// 设置内容为新的全屏图片控件
+	win.SetContent(t.fullscreenImage)
+
+	// 绑定ESC退出
 	win.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
 		if key.Name == fyne.KeyEscape {
 			win.Close()
 		}
 	})
+
 	win.SetFullScreen(true)
 	win.Show()
 }
