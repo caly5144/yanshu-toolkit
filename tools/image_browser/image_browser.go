@@ -47,6 +47,7 @@ func newScalableImage(tool *imageBrowserTool) *scalableImage {
 	s.ExtendBaseWidget(s)
 	return s
 }
+
 func (s *scalableImage) SetImage(img image.Image, path string) {
 	s.mu.Lock()
 	s.img = img
@@ -54,7 +55,9 @@ func (s *scalableImage) SetImage(img image.Image, path string) {
 	s.mu.Unlock()
 	s.Refresh()
 }
+
 func (s *scalableImage) Tapped(*fyne.PointEvent) {}
+
 func (s *scalableImage) TappedSecondary(e *fyne.PointEvent) {
 	s.mu.RLock()
 	path := s.path
@@ -111,6 +114,7 @@ func (s *scalableImage) TappedSecondary(e *fyne.PointEvent) {
 	menu := fyne.NewMenu("", showInExplorer, copyPathItem, fyne.NewMenuItemSeparator(), deleteItem, propItem)
 	widget.ShowPopUpMenuAtPosition(menu, s.tool.parentWin.Canvas(), e.AbsolutePosition)
 }
+
 func (s *scalableImage) CreateRenderer() fyne.WidgetRenderer {
 	renderer := &scalableImageRenderer{scalable: s}
 	raster := canvas.NewRaster(renderer.draw)
@@ -151,6 +155,7 @@ func (r *scalableImageRenderer) draw(w, h int) image.Image {
 	draw.CatmullRom.Scale(dst, dstRect, img, img.Bounds(), draw.Over, nil)
 	return dst
 }
+
 func (r *scalableImageRenderer) Layout(size fyne.Size)        { r.raster.Resize(size) }
 func (r *scalableImageRenderer) MinSize() fyne.Size           { return fyne.NewSize(50, 50) }
 func (r *scalableImageRenderer) Refresh()                     { r.raster.Refresh() }
@@ -200,7 +205,6 @@ type imageBrowserTool struct {
 func (t *imageBrowserTool) Title() string       { return "图片浏览器" }
 func (t *imageBrowserTool) Icon() fyne.Resource { return theme.FileImageIcon() }
 func (t *imageBrowserTool) Category() string    { return "媒体工具" }
-
 func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	if t.view != nil {
 		return t.view
@@ -211,6 +215,17 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 			t.handleDrop(uris[0])
 		}
 	})
+
+	// ** 新增: 为主窗口添加键盘监听 **
+	t.parentWin.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
+		switch key.Name {
+		case fyne.KeyLeft:
+			t.showPrevImage()
+		case fyne.KeyRight:
+			t.showNextImage()
+		}
+	})
+
 	t.displayWidget = newScalableImage(t)
 	t.folderLabel = widget.NewLabel("点击右侧按钮选择文件夹...")
 	t.folderLabel.Wrapping = fyne.TextTruncate
@@ -244,15 +259,11 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	t.nextButton = widget.NewButtonWithIcon("下一张", theme.MediaSkipNextIcon(), t.showNextImage)
 	t.fullscreenBtn = widget.NewButtonWithIcon("全屏", theme.ViewFullScreenIcon(), t.toggleFullscreen)
 	t.clearButton = widget.NewButtonWithIcon("清除", theme.DeleteIcon(), t.clearAll)
-
-	// **修正：使用可靠的图标，并设置初始文本**
 	t.toggleConfigBtn = widget.NewButtonWithIcon("收起设置", theme.MenuExpandIcon(), t.toggleConfigPanel)
 	t.toggleConfigBtn.Importance = widget.LowImportance
-
 	folderSelector := container.NewBorder(nil, nil, nil, t.folderSelectBtn, t.folderLabel)
 	optionsBox := container.NewHBox(t.playModeSelect, t.includeSubdir)
 	t.configForm = widget.NewForm(widget.NewFormItem("图片文件夹", folderSelector), widget.NewFormItem("刷新间隔(秒)", t.intervalEntry), widget.NewFormItem("", optionsBox), widget.NewFormItem("图片类型", t.extensionsEntry))
-
 	t.imageHostContainer = container.NewStack(t.displayWidget, t.dropHint)
 	scrollableAccordion := container.NewScroll(t.dirAccordion)
 	t.contentSplit = container.NewHSplit(t.imageHostContainer, scrollableAccordion)
@@ -260,25 +271,19 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	t.nextButton.Disable()
 	t.fullscreenBtn.Disable()
 	t.clearButton.Disable()
-
-	// **修正：将切换按钮放回底部控制栏**
 	controlBar := container.NewHBox(t.startButton, t.prevButton, t.nextButton, t.clearButton, t.fullscreenBtn, layout.NewSpacer(), t.toggleConfigBtn, t.statusLabel)
-
 	t.view = container.NewBorder(t.configForm, controlBar, nil, nil, t.contentSplit)
-
 	t.playModeSelect.OnChanged = func(s string) {
 		t.currentPlayMode = s
 		t.resetForNewScan()
 		t.updateStatus("播放模式已切换，请重新开始。", false)
 	}
 	t.includeSubdir.OnChanged = func(b bool) { t.resetForNewScan(); t.updateStatus("扫描选项已切换，请重新开始。", false) }
-
 	t.updateDisplayState()
 	t.updateDirAccordion()
 	return t.view
 }
 
-// **修正：使用 Hide/Show 方法和可靠的图标**
 func (t *imageBrowserTool) toggleConfigPanel() {
 	if t.configForm.Visible() {
 		t.configForm.Hide()
@@ -634,15 +639,23 @@ func (t *imageBrowserTool) toggleFullscreen() {
 		t.fullscreenImage = newScalableImage(t)
 	}
 	t.fullscreenImage.SetImage(img, path)
-	win := fyne.CurrentApp().NewWindow("全屏图片查看 (按 ESC 退出)")
+	win := fyne.CurrentApp().NewWindow("全屏图片查看 (按 ESC 退出, 方向键切换)")
 	t.fullscreenWin = win
 	win.SetOnClosed(func() { t.fullscreenWin = nil })
 	win.SetContent(t.fullscreenImage)
+
+	// ** 修改: 扩展全屏窗口的键盘监听 **
 	win.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
-		if key.Name == fyne.KeyEscape {
+		switch key.Name {
+		case fyne.KeyEscape:
 			win.Close()
+		case fyne.KeyLeft:
+			t.showPrevImage()
+		case fyne.KeyRight:
+			t.showNextImage()
 		}
 	})
+
 	win.SetFullScreen(true)
 	win.Show()
 }
