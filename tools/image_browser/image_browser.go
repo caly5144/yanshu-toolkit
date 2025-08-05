@@ -187,6 +187,7 @@ type imageBrowserTool struct {
 	isRunning          bool
 	fullscreenWin      fyne.Window
 	fullscreenImage    *scalableImage
+	dropHint           fyne.CanvasObject
 }
 
 func (t *imageBrowserTool) Title() string       { return "图片随机浏览器" }
@@ -196,6 +197,13 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	if t.view != nil {
 		return t.view
 	}
+	t.parentWin = win
+	t.parentWin.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
+		if len(uris) > 0 {
+			// 我们只处理第一个拖放的项目
+			t.handleDrop(uris[0])
+		}
+	})
 	if len(fyne.CurrentApp().Driver().AllWindows()) > 0 {
 		t.parentWin = fyne.CurrentApp().Driver().AllWindows()[0]
 	}
@@ -223,7 +231,12 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 
 	t.displayWidget = newScalableImage(t)
 
-	t.imageHostContainer = container.NewMax(t.displayWidget)
+	hintLabel := widget.NewLabel("拖放文件夹到此处开始")
+	hintLabel.Alignment = fyne.TextAlignCenter
+	hintLabel.Wrapping = fyne.TextWrapWord
+	t.dropHint = container.New(layout.NewCenterLayout(), hintLabel)
+
+	t.imageHostContainer = container.NewStack(t.displayWidget, t.dropHint)
 	t.statusLabel = widget.NewLabel("请先选择一个文件夹。")
 	t.statusLabel.Alignment = fyne.TextAlignLeading
 	t.startButton = widget.NewButtonWithIcon("开始", theme.MediaPlayIcon(), t.toggle)
@@ -235,9 +248,13 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	t.fullscreenBtn = widget.NewButtonWithIcon("全屏", theme.ViewFullScreenIcon(), t.toggleFullscreen)
 	t.clearButton = widget.NewButtonWithIcon("清除", theme.DeleteIcon(), func() {
 		if t.isRunning {
-			t.toggle()
+			t.toggle() // 先暂停
 		}
 		t.displayWidget.SetImage(nil, "")
+		// 如果全屏窗口存在，也清理它
+		if t.fullscreenImage != nil {
+			t.fullscreenImage.SetImage(nil, "")
+		}
 		t.imagePaths = []string{}
 		t.selectedFolder = ""
 		t.folderLabel.SetText("点击右侧按钮选择文件夹...")
@@ -245,14 +262,69 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 		t.fullscreenBtn.Disable()
 		t.clearButton.Disable()
 		t.updateStatus("已清除，请重新选择文件夹并开始。", false)
+		t.updateDisplayState() // <--- 关键调用
 	})
 	t.nextButton.Disable()
 	t.fullscreenBtn.Disable()
 	t.clearButton.Disable()
 	controlBar := container.NewHBox(t.startButton, t.nextButton, t.clearButton, t.fullscreenBtn, layout.NewSpacer(), t.statusLabel)
 	t.view = container.NewBorder(t.configForm, controlBar, nil, nil, t.imageHostContainer)
+	t.updateDisplayState()
 	return t.view
 }
+
+// in func (t *imageBrowserTool) handleDrop(uri fyne.URI)
+func (t *imageBrowserTool) handleDrop(uri fyne.URI) {
+	path := uri.Path()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.updateStatus(fmt.Sprintf("无法访问拖放路径: %v", err), true)
+		return
+	}
+
+	// 如果拖入的是文件，则使用其父目录
+	if !info.IsDir() {
+		path = filepath.Dir(path)
+	}
+
+	// 如果正在播放，先暂停。这部分保留是合理的，因为换了目录，旧的播放应该停止。
+	if t.isRunning {
+		t.toggle() // 调用toggle来暂停
+	}
+
+	// 清理旧的图片路径列表和显示的图片，因为目录已经变了
+	t.imagePaths = []string{}
+	t.displayWidget.SetImage(nil, "")
+	if t.fullscreenImage != nil {
+		t.fullscreenImage.SetImage(nil, "")
+	}
+	t.updateDisplayState() // 清空图片后，确保提示显示出来
+
+	// 设置新文件夹并更新UI
+	t.selectedFolder = path
+	t.folderLabel.SetText(path)
+
+	// 更新状态提示，但不自动开始
+	t.updateStatus("文件夹已通过拖放更新，请点击“开始”播放。", false)
+
+	// 自动播放
+	// t.toggle() // <-- 注释或删除这一行
+}
+
+// New helper function for imageBrowserTool
+func (t *imageBrowserTool) updateDisplayState() {
+	t.displayWidget.mu.RLock()
+	hasImage := t.displayWidget.img != nil
+	t.displayWidget.mu.RUnlock()
+
+	if hasImage {
+		t.dropHint.Hide()
+	} else {
+		t.dropHint.Show()
+	}
+	t.imageHostContainer.Refresh()
+}
+
 func (t *imageBrowserTool) toggle() {
 	if t.isRunning {
 		if t.ticker != nil {
@@ -331,6 +403,7 @@ func (t *imageBrowserTool) showRandomImage() {
 			t.fullscreenImage.SetImage(nil, "")
 		}
 		t.updateStatus("没有更多图片了。", false)
+		t.updateDisplayState()
 		return
 	}
 
@@ -362,6 +435,7 @@ func (t *imageBrowserTool) showRandomImage() {
 	if t.fullscreenImage != nil {
 		t.fullscreenImage.SetImage(img, randomPath)
 	}
+	t.updateDisplayState()
 }
 func (t *imageBrowserTool) toggleFullscreen() {
 	// 如果全屏窗口已存在，则关闭它
