@@ -46,7 +46,7 @@ var SidebarLayout = []CategoryLayout{
 	{
 		Name: "媒体工具",
 		ToolTitles: []string{
-			"图片随机浏览器",
+			"图片浏览器",
 		},
 	},
 }
