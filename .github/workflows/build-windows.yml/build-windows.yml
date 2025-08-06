@@ -1,0 +1,90 @@
+# .github/workflows/build-windows.yml
+
+# Workflow 的名称，会显示在 GitHub Actions 的界面上
+name: Build Windows Application
+
+# 触发此 workflow 的事件
+on:
+  # 1. 当有代码被推送到 main 分支时触发
+  push:
+    branches:
+      - main
+      - master # 如果您的主分支是 master，请保留此行
+
+  # 2. 当您在 GitHub 上创建一个新的 Release 时触发
+  release:
+    types: [published]
+
+  # 3. 允许您在 GitHub Actions 界面手动触发此 workflow
+  workflow_dispatch:
+
+# 定义 workflow 中要执行的任务 (jobs)
+jobs:
+  # 任务的唯一ID
+  build:
+    # 指定此任务运行的操作系统环境
+    runs-on: windows-latest
+
+    # 定义任务中的一系列步骤 (steps)
+    steps:
+      # 第一步：检出（checkout）您的代码仓库
+      # 这样 workflow 才能访问到您的项目文件
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 第二步：安装 Go 语言环境
+      # 'go-version' 可以指定您需要的 Go 版本
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.5' # 建议使用较新的稳定版本
+
+      # 第三步：安装 Fyne 的依赖环境
+      # 对于 Windows，主要是需要一个 C 编译器 (GCC)
+      # 这个 action 会自动处理好 MinGW 的安装和路径设置
+      - name: Install Fyne dependencies
+        run: choco install mingw
+
+      # 第四步：安装 Fyne 命令行工具
+      # 这是执行打包命令所必需的
+      - name: Install Fyne command
+        run: go install fyne.io/fyne/v2/cmd/fyne@latest
+
+      # 第五步：执行 Fyne 打包命令
+      # 这是核心步骤
+      - name: Package Windows application
+        # 'shell: pwsh' 表示使用 PowerShell 执行命令
+        shell: pwsh
+        run: |
+          # 定义应用名称和版本号
+          # 'yanshu-toolkit' 是您的应用名，可以修改
+          # 如果是 release 触发的，就使用 release 的标签名作为版本号，否则使用 commit hash 的前7位
+          $appName = "yanshu-toolkit"
+          if ("${{ github.event_name }}" -eq "release") {
+            $appVersion = "${{ github.event.release.tag_name }}"
+          } else {
+            $appVersion = "${{ github.sha }}".Substring(0, 7)
+          }
+          
+          # 创建一个输出目录
+          New-Item -ItemType Directory -Force -Path "build"
+          
+          # 执行打包命令
+          # -os windows: 明确指定打包为 Windows
+          # -icon assets/icon/app.png: 指定应用图标 (请确保您有这个文件)
+          # -name "$appName-$appVersion.exe": 指定输出的可执行文件名
+          # -ldflags="-H windowsgui": 在 Windows 上隐藏命令行窗口，这是发布版应用的关键
+          fyne package -os windows -icon assets/icon/app.png -name "$appName-$appVersion.exe" -ldflags="-H windowsgui"
+          
+          # 将打包好的 .exe 文件移动到 build 目录
+          Move-Item -Path "$appName-$appVersion.exe" -Destination "build"
+
+      # 第六步：上传构建产物 (Artifacts)
+      # 这样您就可以在 workflow 运行结束后下载打包好的文件
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # 上传的产物名称
+          name: yanshu-toolkit-windows
+          # 要上传的文件路径
+          path: build/
