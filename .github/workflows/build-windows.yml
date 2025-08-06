@@ -34,9 +34,6 @@ jobs:
       - name: Package Windows application
         shell: pwsh
         # 新增 env: 来设置环境变量
-        env:
-          # 将 ldflags 的内容通过 CGO_LDFLAGS 环境变量传递
-          CGO_LDFLAGS: "-H windowsgui"
         run: |
           # 定义应用名称和版本号
           # 直接从触发事件的 release 中获取 tag_name 作为版本号
