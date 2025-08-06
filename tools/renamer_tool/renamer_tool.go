@@ -10,16 +10,16 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
-
 	"yanshu-toolkit/core"
 
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/canvas"
 	"fyne.io/fyne/v2/container"
-	"fyne.io/fyne/v2/data/binding"
 	"fyne.io/fyne/v2/dialog"
 	"fyne.io/fyne/v2/layout"
 	"fyne.io/fyne/v2/storage"
@@ -110,16 +110,19 @@ func init() {
 }
 
 type renamerTool struct {
-	win          fyne.Window
-	filesData    binding.UntypedList
-	rulesData    binding.UntypedList
-	presetSelect *widget.Select
-	presets      map[string][]RuleDefinition
-	ruleList     *widget.List
-	// 修正: 添加对预览列表的引用
+	win      fyne.Window
+	mainView fyne.CanvasObject
+
+	// 核心变更: 放弃数据绑定，使用普通切片。移除所有锁。
+	fileItems []*FileItem
+	rules     []Rule
+
+	// UI 组件引用
+	ruleList          *widget.List
 	previewList       *widget.List
+	presetSelect      *widget.Select
+	presets           map[string][]RuleDefinition
 	selectedRuleIndex widget.ListItemID
-	mainView          fyne.CanvasObject
 }
 
 func (t *renamerTool) Title() string       { return "批量重命名" }
@@ -129,8 +132,8 @@ func (t *renamerTool) Category() string    { return "文件管理" }
 // --- UI 构建 ---
 func (t *renamerTool) View(win fyne.Window) fyne.CanvasObject {
 	t.win = win
-	t.filesData = binding.NewUntypedList()
-	t.rulesData = binding.NewUntypedList()
+	t.fileItems = []*FileItem{}
+	t.rules = []Rule{}
 	t.selectedRuleIndex = -1
 
 	t.win.SetOnDropped(func(_ fyne.Position, uris []fyne.URI) {
@@ -151,13 +154,14 @@ func (t *renamerTool) View(win fyne.Window) fyne.CanvasObject {
 }
 
 func (t *renamerTool) createLeftPanel() fyne.CanvasObject {
-	t.ruleList = widget.NewListWithData(t.rulesData,
+	t.ruleList = widget.NewList(
+		func() int {
+			return len(t.rules)
+		},
 		func() fyne.CanvasObject { return widget.NewLabel("") },
-		func(i binding.DataItem, o fyne.CanvasObject) {
-			untypedItem, _ := i.(binding.Untyped)
-			item, _ := untypedItem.Get()
-			if rule, ok := item.(Rule); ok {
-				o.(*widget.Label).SetText(rule.Describe())
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			if i < len(t.rules) {
+				o.(*widget.Label).SetText(t.rules[i].Describe())
 			}
 		},
 	)
@@ -167,10 +171,8 @@ func (t *renamerTool) createLeftPanel() fyne.CanvasObject {
 			t.selectedRuleIndex = -1
 		}
 	}
-
 	addRuleBtn := widget.NewButtonWithIcon("添加规则", theme.ContentAddIcon(), func() { t.showAddRuleDialog() })
 	removeRuleBtn := widget.NewButtonWithIcon("移除选中", theme.ContentRemoveIcon(), func() { t.removeSelectedRule() })
-
 	t.presetSelect = widget.NewSelect([]string{}, func(name string) { t.loadPreset(name) })
 	t.presetSelect.PlaceHolder = "加载预设..."
 	t.loadPresets()
@@ -184,35 +186,47 @@ func (t *renamerTool) createLeftPanel() fyne.CanvasObject {
 		container.NewBorder(nil, container.NewGridWithColumns(2, addRuleBtn, removeRuleBtn), nil, nil, t.ruleList),
 	)
 }
+
 func (t *renamerTool) createRightPanel() fyne.CanvasObject {
-	// 修正: 将列表赋值给结构体字段
-	t.previewList = widget.NewListWithData(t.filesData,
-		func() fyne.CanvasObject { return newColoredLabel() },
-		func(i binding.DataItem, o fyne.CanvasObject) {
-			untypedItem, _ := i.(binding.Untyped)
-			item, _ := untypedItem.Get()
-			if fileItem, ok := item.(*FileItem); ok {
-				o.(*coloredLabel).SetText(fileItem.OriginalName, fileItem.NewName, fileItem.Status)
+	t.previewList = widget.NewList(
+		func() int {
+			return len(t.fileItems)
+		},
+		func() fyne.CanvasObject {
+			return newColoredLabel()
+		},
+		func(i widget.ListItemID, o fyne.CanvasObject) {
+			if i < len(t.fileItems) {
+				item := t.fileItems[i]
+				o.(*coloredLabel).SetText(item.OriginalName, item.NewName, item.Status)
 			}
 		},
 	)
-
 	return container.NewBorder(widget.NewLabelWithStyle("预览 (可拖放文件到此窗口)", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}), nil, nil, nil, t.previewList)
 }
+
 func (t *renamerTool) createBottomPanel() fyne.CanvasObject {
 	addFilesBtn := widget.NewButton("选择文件...", func() { t.showSelectFilesDialog() })
 	addFolderBtn := widget.NewButton("添加文件夹(递归)", func() { t.showAddFolderRecursiveDialog() })
-	clearBtn := widget.NewButton("清空列表", func() { t.filesData.Set([]interface{}{}) })
+
+	clearBtn := widget.NewButton("清空列表", func() {
+		t.fileItems = []*FileItem{}
+		t.previewList.Refresh()
+		// 手动触发GC并建议将内存返回给操作系统
+		runtime.GC()
+		debug.FreeOSMemory()
+	})
+
 	renameBtn := widget.NewButtonWithIcon("开始重命名", theme.ConfirmIcon(), func() { t.executeRename() })
 	renameBtn.Importance = widget.HighImportance
-
 	return container.NewVBox(container.NewGridWithColumns(4, addFilesBtn, addFolderBtn, clearBtn, renameBtn), widget.NewSeparator())
 }
 
-// --- 文件处理方法 ---
+// --- 文件处理方法 (回归原始同步逻辑) ---
 func (t *renamerTool) addFile(path string) {
-	t.filesData.Append(&FileItem{OriginalPath: path, OriginalName: filepath.Base(path), NewName: filepath.Base(path)})
+	t.fileItems = append(t.fileItems, &FileItem{OriginalPath: path, OriginalName: filepath.Base(path), NewName: filepath.Base(path)})
 }
+
 func (t *renamerTool) addFilesFromURIs(uris []fyne.URI) {
 	var pathsToAdd []string
 	for _, u := range uris {
@@ -243,14 +257,12 @@ func (t *renamerTool) showSelectFilesDialog() {
 		if err != nil || uri == nil {
 			return
 		}
-
 		dirPath := uri.Path()
 		files, err := ioutil.ReadDir(dirPath)
 		if err != nil {
 			dialog.ShowError(err, t.win)
 			return
 		}
-
 		var fileNames []string
 		var fileMap = make(map[string]string)
 		for _, file := range files {
@@ -263,7 +275,6 @@ func (t *renamerTool) showSelectFilesDialog() {
 			dialog.ShowInformation("提示", "该文件夹下没有文件。", t.win)
 			return
 		}
-
 		checkGroup := widget.NewCheckGroup(fileNames, nil)
 		selectAllBtn := widget.NewButton("全选/取消全选", func() {
 			if len(checkGroup.Selected) == len(fileNames) {
@@ -273,7 +284,6 @@ func (t *renamerTool) showSelectFilesDialog() {
 			}
 		})
 		content := container.NewBorder(selectAllBtn, nil, nil, nil, container.NewScroll(checkGroup))
-
 		d := dialog.NewCustomConfirm("选择要添加的文件", "确定", "取消", content, func(ok bool) {
 			if !ok {
 				return
@@ -290,6 +300,7 @@ func (t *renamerTool) showSelectFilesDialog() {
 		d.Show()
 	}, t.win)
 }
+
 func (t *renamerTool) showAddFolderRecursiveDialog() {
 	dialog.ShowFolderOpen(func(uri fyne.ListableURI, err error) {
 		if err == nil && uri != nil {
@@ -299,48 +310,27 @@ func (t *renamerTool) showAddFolderRecursiveDialog() {
 }
 
 // --- 规则处理方法 ---
-// 修正: 这是性能优化的最终形态！
 func (t *renamerTool) updatePreviews() {
-	rulesObj, _ := t.rulesData.Get()
-	filesObj, _ := t.filesData.Get()
-	if len(filesObj) == 0 {
-		return
-	}
-
-	var currentRules []Rule
-	for _, r := range rulesObj {
-		currentRules = append(currentRules, r.(Rule))
-	}
-
-	// 1. 创建一个全新的 slice 来存放更新后的数据
-	newFilesList := make([]interface{}, len(filesObj))
-
-	// 2. 遍历原始数据，计算新值，并存入新的 slice
-	for i, f := range filesObj {
-		originalItem := f.(*FileItem)
-
-		newItem := *originalItem // 创建一个副本
-
-		newName := newItem.OriginalName
-		for _, rule := range currentRules {
-			ext := filepath.Ext(newName)
-			baseName := strings.TrimSuffix(newName, ext)
-			baseName = rule.Apply(baseName, i)
-			newName = baseName + ext
+	if len(t.fileItems) > 0 {
+		for i, item := range t.fileItems {
+			newName := item.OriginalName
+			for _, rule := range t.rules {
+				ext := filepath.Ext(newName)
+				baseName := strings.TrimSuffix(newName, ext)
+				baseName = rule.Apply(baseName, i)
+				newName = baseName + ext
+			}
+			item.NewName = newName
+			item.Status = ""
 		}
-		newItem.NewName = newName
-		newItem.Status = ""
-
-		newFilesList[i] = &newItem
 	}
+	t.previewList.Refresh()
+}
 
-	// 3. 用全新的列表，一次性替换整个数据源
-	t.filesData.Set(newFilesList)
-
-	// 4. 关键: 手动调用 Refresh() 强制重绘
-	if t.previewList != nil {
-		t.previewList.Refresh()
-	}
+func (t *renamerTool) addRule(rule Rule) {
+	t.rules = append(t.rules, rule)
+	t.ruleList.Refresh()
+	t.updatePreviews()
 }
 
 func (t *renamerTool) removeSelectedRule() {
@@ -348,22 +338,19 @@ func (t *renamerTool) removeSelectedRule() {
 	if idx < 0 {
 		return
 	}
-	rules, _ := t.rulesData.Get()
-	newRules := append(rules[:idx], rules[idx+1:]...)
-	t.rulesData.Set(newRules)
+	t.rules = append(t.rules[:idx], t.rules[idx+1:]...)
 	t.ruleList.UnselectAll()
+	t.ruleList.Refresh()
 	t.updatePreviews()
 }
 
 func (t *renamerTool) executeRename() {
-	filesObj, _ := t.filesData.Get()
-	if len(filesObj) == 0 {
+	if len(t.fileItems) == 0 {
 		dialog.ShowInformation("提示", "文件列表为空。", t.win)
 		return
 	}
 	renamedCount, errorCount := 0, 0
-	for i, f := range filesObj {
-		item := f.(*FileItem)
+	for i, item := range t.fileItems {
 		if item.OriginalName == item.NewName {
 			continue
 		}
@@ -378,12 +365,12 @@ func (t *renamerTool) executeRename() {
 			item.OriginalName = item.NewName
 			renamedCount++
 		}
-		t.filesData.SetValue(i, item)
+		t.previewList.RefreshItem(i)
 	}
 	dialog.ShowInformation("完成", fmt.Sprintf("重命名完成。\n成功: %d\n失败: %d", renamedCount, errorCount), t.win)
 }
 
-// 省略其他未改变的方法...
+// --- Presets and Dialogs (无变化) ---
 const presetsDir = "./data/renamer"
 
 func (t *renamerTool) loadPresets() {
@@ -417,29 +404,30 @@ func (t *renamerTool) loadPresets() {
 	t.presetSelect.Options = presetNames
 	t.presetSelect.Refresh()
 }
+
 func (t *renamerTool) loadPreset(name string) {
 	if defs, ok := t.presets[name]; ok {
-		var newRules []interface{}
+		t.rules = []Rule{}
 		for _, def := range defs {
-			newRules = append(newRules, t.createRuleFromDef(def))
+			t.rules = append(t.rules, t.createRuleFromDef(def))
 		}
-		t.rulesData.Set(newRules)
+		t.ruleList.Refresh()
 		t.updatePreviews()
 	}
 }
+
 func (t *renamerTool) showSavePresetDialog() {
 	entry := widget.NewEntry()
 	entry.SetPlaceHolder("输入预设名称...")
 	d := dialog.NewForm("保存预设", "确定", "取消", []*widget.FormItem{widget.NewFormItem("名称", entry)}, func(ok bool) {
 		if ok && entry.Text != "" {
-			rulesObj, _ := t.rulesData.Get()
-			if len(rulesObj) == 0 {
+			if len(t.rules) == 0 {
 				dialog.ShowInformation("提示", "没有可保存的规则。", t.win)
 				return
 			}
 			var defs []RuleDefinition
-			for _, r := range rulesObj {
-				defs = append(defs, t.createDefFromRule(r.(Rule)))
+			for _, r := range t.rules {
+				defs = append(defs, t.createDefFromRule(r))
 			}
 			data, err := json.MarshalIndent(defs, "", "  ")
 			if err != nil {
@@ -458,6 +446,7 @@ func (t *renamerTool) showSavePresetDialog() {
 	d.Resize(fyne.NewSize(300, 150))
 	d.Show()
 }
+
 func (t *renamerTool) deleteCurrentPreset() {
 	selected := t.presetSelect.Selected
 	if selected == "" {
@@ -477,6 +466,7 @@ func (t *renamerTool) deleteCurrentPreset() {
 		t.loadPresets()
 	}, t.win)
 }
+
 func (t *renamerTool) createRuleFromDef(def RuleDefinition) Rule {
 	switch def.Type {
 	case "replace":
@@ -495,6 +485,7 @@ func (t *renamerTool) createRuleFromDef(def RuleDefinition) Rule {
 	}
 	return nil
 }
+
 func (t *renamerTool) createDefFromRule(rule Rule) RuleDefinition {
 	switch r := rule.(type) {
 	case *ReplaceRule:
@@ -508,6 +499,7 @@ func (t *renamerTool) createDefFromRule(rule Rule) RuleDefinition {
 	}
 	return RuleDefinition{}
 }
+
 func (t *renamerTool) showAddRuleDialog() {
 	ruleTypes := []string{"插入", "替换", "大小写", "序列化"}
 	var ruleGetters []func() Rule
@@ -596,8 +588,7 @@ func (t *renamerTool) showAddRuleDialog() {
 		}
 		newRule := ruleGetters[selectedIndex]()
 		if newRule != nil {
-			t.rulesData.Append(newRule)
-			t.updatePreviews()
+			t.addRule(newRule)
 		}
 	}, t.win)
 	d.Resize(fyne.NewSize(500, 300))
