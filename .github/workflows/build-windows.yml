@@ -26,11 +26,17 @@ jobs:
       - name: Install Fyne dependencies
         run: choco install mingw
 
+      # 【修改点 1】: 使用新的官方推荐路径安装 fyne 工具
       - name: Install Fyne command
-        run: go install fyne.io/fyne/v2/cmd/fyne@latest
+        run: go install fyne.io/tools/cmd/fyne@latest
 
+      # 【修改点 2】: 修改打包步骤
       - name: Package Windows application
         shell: pwsh
+        # 新增 env: 来设置环境变量
+        env:
+          # 将 ldflags 的内容通过 CGO_LDFLAGS 环境变量传递
+          CGO_LDFLAGS: "-H windowsgui"
         run: |
           # 定义应用名称和版本号
           # 直接从触发事件的 release 中获取 tag_name 作为版本号
@@ -41,7 +47,7 @@ jobs:
           $outputFileName = "$appName-windows-$appVersion.exe"
           
           # 执行打包命令
-          fyne package -os windows -icon assets/icon/app.png -name "$outputFileName" -ldflags="-H windowsgui"
+          fyne package -os windows -icon assets/icon/app.png -name "$outputFileName"
           
       - name: Upload to Release Assets
         uses: softprops/action-gh-release@v2
