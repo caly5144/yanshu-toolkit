@@ -2,6 +2,7 @@ package text_formatter
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,8 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"github.com/lascape/sat"
+	"golang.org/x/text/encoding/simplifiedchinese"
+	"golang.org/x/text/transform"
 )
 
 func New() core.Tool {
@@ -113,14 +116,6 @@ func (t *textTool) View(win fyne.Window) fyne.CanvasObject {
 	checkDeleteBreaks := widget.NewCheck("删除非段落换行", nil)
 	checkToSimplified := widget.NewCheck("转换为简体字", nil)
 	checkCustomDict := widget.NewCheck("使用自定义字典", nil)
-	checkToSimplified.OnChanged = func(checked bool) {
-		if checked {
-			checkCustomDict.Enable()
-		} else {
-			checkCustomDict.SetChecked(false)
-			checkCustomDict.Disable()
-		}
-	}
 
 	// 【UI部分-1】创建新的UI组件
 	checkSpacePara := widget.NewCheck("多个空格分隔段落", nil)
@@ -159,7 +154,7 @@ func (t *textTool) View(win fyne.Window) fyne.CanvasObject {
 			}
 		}
 
-		if checkToSimplified.Checked && checkCustomDict.Checked {
+		if checkCustomDict.Checked {
 			dictPath := filepath.Join("data", "custom_dict.txt")
 			if _, err := os.Stat(dictPath); os.IsNotExist(err) {
 				dialog.ShowError(errors.New("自定义字典文件未找到: "+dictPath), win)
@@ -245,31 +240,44 @@ func (t *textTool) View(win fyne.Window) fyne.CanvasObject {
 				return
 			}
 			if reader == nil {
-				return
+				return // 用户取消
 			}
-			defer reader.Close()
+
 			progress := dialog.NewProgressInfinite("正在读取", "正在解析文件内容...", win)
 			progress.Show()
+
 			go func() {
-				var newLines []string
-				scanner := bufio.NewScanner(reader)
-				for scanner.Scan() {
-					line := scanner.Text()
-					newLines = append(newLines, splitLineForDisplay(line, maxDisplayLineLength)...)
-				}
-				if err := scanner.Err(); err != nil {
+				defer reader.Close()
+
+				content, readErr := io.ReadAll(reader) // 1. 先读取原始字节
+				if readErr != nil {
 					fyne.Do(func() {
-						dialog.ShowError(err, win)
 						progress.Hide()
+						dialog.ShowError(readErr, win)
 					})
 					return
 				}
+
+				utf8Content := decodeToUTF8(content)
+
+				text := strings.ReplaceAll(string(utf8Content), "\r\n", "\n")
+				rawLines := strings.Split(text, "\n")
+
+				var processedLines []string
+				for _, line := range rawLines {
+					processedLines = append(processedLines, splitLineForDisplay(line, maxDisplayLineLength)...)
+				}
+
 				fyne.Do(func() {
-					t.lines = newLines
+					progress.Hide()
+					if len(processedLines) == 0 {
+						t.lines = []string{"文件为空。"}
+					} else {
+						t.lines = processedLines
+					}
 					t.previousLines = nil
 					t.undoBtn.Disable()
 					t.list.Refresh()
-					progress.Hide()
 				})
 			}()
 		}, win)
@@ -440,6 +448,33 @@ func applyCustomDictionary(text string, dictPath string) (string, error) {
 	}
 	replacer := strings.NewReplacer(replacerArgs...)
 	return replacer.Replace(text), nil
+}
+
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// 如果已经是UTF-8或者转换失败，它会返回原始数据var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// decodeToUTF8 自动检测并移除BOM，然后尝试从GBK转换为UTF-8
+func decodeToUTF8(data []byte) []byte {
+	// 1. 检查并移除UTF-8 BOM
+	if bytes.HasPrefix(data, utf8BOM) {
+		// 如果文件以BOM开头，说明它肯定是UTF-8编码。
+		// 我们只需去掉BOM，然后直接返回剩余部分即可。
+		return bytes.TrimPrefix(data, utf8BOM)
+	}
+
+	// 2. 如果没有BOM，再尝试进行GBK解码（逻辑和之前一样）
+	// 使用 GB18030 解码器，因为它是 GBK 和 GB2312 的超集，兼容性最好
+	decoder := simplifiedchinese.GB18030.NewDecoder()
+
+	utf8Data, _, err := transform.Bytes(decoder, data)
+	if err != nil {
+		// 转换失败，说明它很可能本来就是（不带BOM的）UTF-8编码
+		return data
+	}
+
+	// 转换成功，返回转换后的UTF-8数据
+	return utf8Data
 }
 
 // 【核心逻辑部分】修改 formatTextStream 函数

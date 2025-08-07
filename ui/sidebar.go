@@ -13,10 +13,7 @@ import (
 )
 
 func createSidebar(content *container.DocTabs, win fyne.Window) fyne.CanvasObject {
-	// 1. 获取所有已注册工具的静态信息
 	allToolInfos := core.GetToolInfos()
-
-	// 2. 将工具信息按标题存入 map，以便在布局配置中快速查找
 	infoMap := make(map[string]core.ToolInfo)
 	for _, info := range allToolInfos {
 		infoMap[info.Title] = info
@@ -32,9 +29,15 @@ func createSidebar(content *container.DocTabs, win fyne.Window) fyne.CanvasObjec
 				continue
 			}
 
-			// 【关键修改】: 在按钮的回调函数中，调用工厂来创建新实例
-			btn := widget.NewButtonWithIcon(info.Title, info.Icon, func() {
-				// 每次点击，都通过工厂创建一个全新的工具实例！
+			// --- 【关键修改】: 在这里延迟获取图标 ---
+			// 1. 创建一个临时的、一次性的工具实例，目的仅仅是为了调用它的 Icon() 方法。
+			//    因为此时 App 已经运行，所以这是安全的。
+			tempToolForIcon := info.Factory()
+			toolIcon := tempToolForIcon.Icon()
+
+			// 2. 使用获取到的图标创建按钮。
+			//    注意：按钮的回调函数仍然是创建一个全新的实例，绝不能使用 tempToolForIcon！
+			btn := widget.NewButtonWithIcon(info.Title, toolIcon, func() {
 				newToolInstance := info.Factory()
 				openTab(content, newToolInstance, win)
 			})
