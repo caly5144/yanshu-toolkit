@@ -17,6 +17,8 @@ import (
 	appTheme "yanshu-toolkit/theme"
 )
 
+var tabToolMap = make(map[*container.TabItem]core.Tool)
+
 func openTab(tabs *container.DocTabs, tool core.Tool, win fyne.Window) {
 	for _, item := range tabs.Items {
 		if item.Text == tool.Title() {
@@ -24,7 +26,12 @@ func openTab(tabs *container.DocTabs, tool core.Tool, win fyne.Window) {
 			return
 		}
 	}
-	tab := container.NewTabItemWithIcon(tool.Title(), tool.Icon(), tool.View(win))
+	content := tool.View(win)
+	tab := container.NewTabItemWithIcon(tool.Title(), tool.Icon(), content)
+
+	// 当新标签页创建时，将其与工具实例关联起来
+	tabToolMap[tab] = tool
+
 	tabs.Append(tab)
 	tabs.Select(tab)
 }
@@ -32,6 +39,14 @@ func openTab(tabs *container.DocTabs, tool core.Tool, win fyne.Window) {
 func CreateMainWindowLayout(app fyne.App, win fyne.Window) fyne.CanvasObject {
 	mainContent := container.NewDocTabs()
 	mainContent.SetTabLocation(container.TabLocationTop)
+
+	mainContent.OnClosed = func(item *container.TabItem) {
+		if tool, ok := tabToolMap[item]; ok {
+			tool.Destroy()
+
+			delete(tabToolMap, item)
+		}
+	}
 
 	sidebar := createSidebar(mainContent, win)
 
@@ -60,9 +75,10 @@ func CreateMainWindowLayout(app fyne.App, win fyne.Window) fyne.CanvasObject {
 	finalLayout := container.NewMax(split, buttonOverlay)
 
 	// 默认打开首页
-	for _, t := range core.GetTools() {
-		if t.Title() == "首页" {
-			openTab(mainContent, t, win)
+	for _, info := range core.GetToolInfos() {
+		if info.Title == "首页" {
+			homeInstance := info.Factory()
+			openTab(mainContent, homeInstance, win)
 			break
 		}
 	}

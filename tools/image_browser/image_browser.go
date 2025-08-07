@@ -28,9 +28,15 @@ import (
 	"golang.org/x/image/draw"
 )
 
+func New() core.Tool {
+	return &imageBrowserTool{}
+}
+
 func init() {
-	rand.Seed(time.Now().UnixNano())
-	core.Register(&imageBrowserTool{})
+	core.RegisterFactory(New) // <-- 使用包名调用
+}
+
+func (t *imageBrowserTool) Destroy() {
 }
 
 // --- 自定义高性能图片控件 (无变化) ---

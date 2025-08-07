@@ -56,13 +56,19 @@ type localLauncherTool struct {
 	container  *fyne.Container
 }
 
-func init() {
-	core.Register(&localLauncherTool{})
+func New() core.Tool {
+	return &localLauncherTool{}
 }
 
+func init() {
+	core.RegisterFactory(New) // <-- 使用包名调用
+}
 func (t *localLauncherTool) Title() string       { return "本地启动器" }
 func (t *localLauncherTool) Icon() fyne.Resource { return theme.HomeIcon() }
 func (t *localLauncherTool) Category() string    { return "常用工具" }
+
+func (t *localLauncherTool) Destroy() {
+}
 
 func (t *localLauncherTool) View(win fyne.Window) fyne.CanvasObject {
 	t.win = win

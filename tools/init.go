@@ -19,5 +19,4 @@ import (
 	_ "yanshu-toolkit/tools/locallauncher"
 	_ "yanshu-toolkit/tools/renamer_tool"
 	_ "yanshu-toolkit/tools/text_formatter"
-	_ "yanshu-toolkit/tools/timestamp_converter"
 )

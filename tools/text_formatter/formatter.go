@@ -23,7 +23,16 @@ import (
 	"github.com/lascape/sat"
 )
 
-func init() { core.Register(&textTool{}) }
+func New() core.Tool {
+	return &textTool{}
+}
+
+func init() {
+	core.RegisterFactory(New) // <-- 使用包名调用
+}
+
+func (t *textTool) Destroy() {
+}
 
 type textTool struct {
 	lines         []string

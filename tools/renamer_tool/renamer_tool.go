@@ -105,8 +105,12 @@ func (r *SerializeRule) Describe() string {
 }
 
 // --- renamerTool 主结构 ---
+func New() core.Tool {
+	return &renamerTool{}
+}
+
 func init() {
-	core.Register(&renamerTool{})
+	core.RegisterFactory(New) // <-- 使用包名调用
 }
 
 type renamerTool struct {
@@ -128,6 +132,9 @@ type renamerTool struct {
 func (t *renamerTool) Title() string       { return "批量重命名" }
 func (t *renamerTool) Icon() fyne.Resource { return theme.DocumentCreateIcon() }
 func (t *renamerTool) Category() string    { return "文件管理" }
+
+func (t *renamerTool) Destroy() {
+}
 
 // --- UI 构建 ---
 func (t *renamerTool) View(win fyne.Window) fyne.CanvasObject {

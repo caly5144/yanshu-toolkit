@@ -27,7 +27,6 @@ var SidebarLayout = []CategoryLayout{
 		Name: "常用工具",
 		ToolTitles: []string{
 			"JSON格式化",
-			"时间戳转换",
 			"本地启动器",
 		},
 	},

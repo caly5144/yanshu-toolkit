@@ -10,8 +10,12 @@ import (
 	"yanshu-toolkit/core" // <-- 新增导入
 )
 
+func New() core.Tool {
+	return &homeTool{}
+}
+
 func init() {
-	core.Register(&homeTool{}) // <-- 使用包名调用
+	core.RegisterFactory(New) // <-- 使用包名调用
 }
 
 type homeTool struct{}
@@ -27,4 +31,7 @@ func (t *homeTool) View(win fyne.Window) fyne.CanvasObject {
 			widget.NewLabel("请从左侧侧边栏选择一个工具开始。"),
 		),
 	)
+}
+
+func (t *homeTool) Destroy() {
 }

@@ -13,40 +13,39 @@ import (
 )
 
 func createSidebar(content *container.DocTabs, win fyne.Window) fyne.CanvasObject {
-	// 1. 获取所有已注册的工具，并放入一个 map 中以便快速查找
-	allTools := core.GetTools()
-	toolMap := make(map[string]core.Tool)
-	for _, t := range allTools {
-		toolMap[t.Title()] = t
+	// 1. 获取所有已注册工具的静态信息
+	allToolInfos := core.GetToolInfos()
+
+	// 2. 将工具信息按标题存入 map，以便在布局配置中快速查找
+	infoMap := make(map[string]core.ToolInfo)
+	for _, info := range allToolInfos {
+		infoMap[info.Title] = info
 	}
 
 	var accordionItems []*widget.AccordionItem
 	for _, categoryLayout := range SidebarLayout {
 		buttonList := container.NewVBox()
 
-		// 遍历指定顺序的工具标题
 		for _, toolTitle := range categoryLayout.ToolTitles {
-			tool, ok := toolMap[toolTitle]
+			info, ok := infoMap[toolTitle]
 			if !ok {
-				continue // 如果工具未注册，安全跳过
+				continue
 			}
 
-			// --- 创建带缩进的按钮容器 (逻辑不变) ---
-			// 注意：这里的 btn 回调函数现在需要捕获 tool 变量
-			btn := widget.NewButtonWithIcon(tool.Title(), tool.Icon(), func() {
-				// 在回调函数中，调用 openTab 并传入 win
-				openTab(content, tool, win)
+			// 【关键修改】: 在按钮的回调函数中，调用工厂来创建新实例
+			btn := widget.NewButtonWithIcon(info.Title, info.Icon, func() {
+				// 每次点击，都通过工厂创建一个全新的工具实例！
+				newToolInstance := info.Factory()
+				openTab(content, newToolInstance, win)
 			})
-			btn.Alignment = widget.ButtonAlignLeading
 
+			btn.Alignment = widget.ButtonAlignLeading
 			indentation := canvas.NewRectangle(color.Transparent)
 			indentation.SetMinSize(fyne.NewSize(16, 0))
-
 			indentedButtonContainer := container.NewBorder(nil, nil, indentation, nil, btn)
 			buttonList.Add(indentedButtonContainer)
 		}
 
-		// 只有当分组内至少有一个成功渲染的工具时，才创建该分组
 		if len(buttonList.Objects) > 0 {
 			item := widget.NewAccordionItem(categoryLayout.Name, buttonList)
 			accordionItems = append(accordionItems, item)
@@ -54,12 +53,9 @@ func createSidebar(content *container.DocTabs, win fyne.Window) fyne.CanvasObjec
 	}
 
 	accordion := widget.NewAccordion(accordionItems...)
-
-	// 默认展开第一个在布局中定义的分组
 	if len(accordion.Items) > 0 {
 		accordion.Open(0)
 	}
 
-	scrollableAccordion := container.NewScroll(accordion)
-	return scrollableAccordion
+	return container.NewScroll(accordion)
 }
