@@ -204,7 +204,10 @@ type imageBrowserTool struct {
 
 func (t *imageBrowserTool) Title() string       { return "图片浏览器" }
 func (t *imageBrowserTool) Icon() fyne.Resource { return theme.FileImageIcon() }
-func (t *imageBrowserTool) Category() string    { return "媒体工具" }
+
+// ** 修正: 修复 Category 方法的接收者语法 **
+func (t *imageBrowserTool) Category() string { return "媒体工具" }
+
 func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	if t.view != nil {
 		return t.view
@@ -215,8 +218,6 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 			t.handleDrop(uris[0])
 		}
 	})
-
-	// ** 新增: 为主窗口添加键盘监听 **
 	t.parentWin.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
 		switch key.Name {
 		case fyne.KeyLeft:
@@ -225,7 +226,6 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 			t.showNextImage()
 		}
 	})
-
 	t.displayWidget = newScalableImage(t)
 	t.folderLabel = widget.NewLabel("点击右侧按钮选择文件夹...")
 	t.folderLabel.Wrapping = fyne.TextTruncate
@@ -275,10 +275,21 @@ func (t *imageBrowserTool) View(win fyne.Window) fyne.CanvasObject {
 	t.view = container.NewBorder(t.configForm, controlBar, nil, nil, t.contentSplit)
 	t.playModeSelect.OnChanged = func(s string) {
 		t.currentPlayMode = s
-		t.resetForNewScan()
-		t.updateStatus("播放模式已切换，请重新开始。", false)
+		if t.selectedFolder != "" {
+			t.handleNewFolder(t.selectedFolder)
+		} else {
+			t.resetForNewScan()
+			t.updateStatus("播放模式已切换，请选择文件夹。", false)
+		}
 	}
-	t.includeSubdir.OnChanged = func(b bool) { t.resetForNewScan(); t.updateStatus("扫描选项已切换，请重新开始。", false) }
+	t.includeSubdir.OnChanged = func(b bool) {
+		if t.selectedFolder != "" {
+			t.handleNewFolder(t.selectedFolder)
+		} else {
+			t.resetForNewScan()
+			t.updateStatus("扫描选项已切换，请选择文件夹。", false)
+		}
+	}
 	t.updateDisplayState()
 	t.updateDirAccordion()
 	return t.view
@@ -295,6 +306,8 @@ func (t *imageBrowserTool) toggleConfigPanel() {
 		t.toggleConfigBtn.SetText("收起设置")
 	}
 }
+
+// ** 修正: 优化toggle逻辑, 使其在列表为空时能重新扫描 **
 func (t *imageBrowserTool) toggle() {
 	if t.isRunning {
 		if t.ticker != nil {
@@ -304,19 +317,14 @@ func (t *imageBrowserTool) toggle() {
 		t.startButton.SetText("开始")
 		t.startButton.SetIcon(theme.MediaPlayIcon())
 		t.setFormEnabled(true)
-		if len(t.imagePaths) > 0 {
-			t.prevButton.Enable()
-			t.nextButton.Enable()
-		} else {
-			t.prevButton.Disable()
-			t.nextButton.Disable()
-		}
 		t.updateStatus(fmt.Sprintf("已暂停。共 %d 张图片。", len(t.imagePaths)), false)
 	} else {
 		if t.selectedFolder == "" {
-			t.updateStatus("错误: 请先选择一个文件夹。", true)
+			t.updateStatus("请先选择一个文件夹。", true)
 			return
 		}
+
+		// 如果图片列表为空 (例如 "清除" 后), 则重新扫描
 		if len(t.imagePaths) == 0 {
 			t.updateStatus("正在扫描图片...", false)
 			go func() {
@@ -330,14 +338,30 @@ func (t *imageBrowserTool) toggle() {
 						t.updateStatus("未在该文件夹下找到任何支持的图片。", true)
 						return
 					}
+					// 扫描成功, 激活按钮, 显示第一张, 然后开始播放
+					t.prevButton.Enable()
+					t.nextButton.Enable()
+					t.fullscreenBtn.Enable()
+					t.clearButton.Enable()
+					fyne.Do(t.updateDirAccordion)
+
+					if !t.isRunning { // 避免重复显示
+						if t.currentPlayMode == PlayModeOrder {
+							t.showImageAtIndex(0)
+						} else {
+							t.showRandomImage()
+						}
+					}
 					t.startPlayback()
 				})
 			}()
 		} else {
+			// 图片列表已存在, 直接开始播放
 			t.startPlayback()
 		}
 	}
 }
+
 func (t *imageBrowserTool) startPlayback() {
 	intervalSec, err := strconv.Atoi(t.intervalEntry.Text)
 	if err != nil || intervalSec <= 0 {
@@ -349,21 +373,6 @@ func (t *imageBrowserTool) startPlayback() {
 	t.isRunning = true
 	t.startButton.SetText("暂停")
 	t.startButton.SetIcon(theme.MediaPauseIcon())
-	t.prevButton.Enable()
-	t.nextButton.Enable()
-	t.fullscreenBtn.Enable()
-	t.clearButton.Enable()
-	fyne.Do(t.updateDirAccordion)
-	t.displayWidget.mu.RLock()
-	hasImage := t.displayWidget.img != nil
-	t.displayWidget.mu.RUnlock()
-	if !hasImage {
-		if t.currentPlayMode == PlayModeOrder {
-			t.showImageAtIndex(0)
-		} else {
-			t.showRandomImage()
-		}
-	}
 	t.ticker = time.NewTicker(time.Duration(intervalSec) * time.Second)
 	go func() {
 		for range t.ticker.C {
@@ -374,6 +383,7 @@ func (t *imageBrowserTool) startPlayback() {
 		}
 	}()
 }
+
 func (t *imageBrowserTool) scanImages() error {
 	rootPath := t.selectedFolder
 	includeSubdir := t.includeSubdir.Checked
@@ -485,19 +495,35 @@ func (t *imageBrowserTool) showImageAtIndex(index int) {
 		t.fullscreenImage.SetImage(img, path)
 	}
 	t.updateDisplayState()
-	if t.currentPlayMode == PlayModeOrder {
-		t.updateStatus(fmt.Sprintf("播放中... (%d / %d)", t.currentImageIndex+1, len(t.imagePaths)), false)
+	// 更新状态文本, 区分播放中和暂停/就绪状态
+	if t.isRunning {
+		if t.currentPlayMode == PlayModeOrder {
+			t.updateStatus(fmt.Sprintf("播放中... (%d / %d)", t.currentImageIndex+1, len(t.imagePaths)), false)
+		} else {
+			t.updateStatus(fmt.Sprintf("播放中... 共 %d 张图片。", len(t.imagePaths)), false)
+		}
+	} else {
+		if t.currentPlayMode == PlayModeOrder {
+			t.updateStatus(fmt.Sprintf("已就绪 (%d / %d)。按“开始”自动播放。", t.currentImageIndex+1, len(t.imagePaths)), false)
+		} else {
+			t.updateStatus(fmt.Sprintf("已就绪。共 %d 张图片。", len(t.imagePaths)), false)
+		}
 	}
 }
+
 func (t *imageBrowserTool) clearAll() {
 	if t.isRunning {
-		t.toggle()
+		t.toggle() // 暂停播放
 	}
-	t.selectedFolder = ""
-	t.folderLabel.SetText("点击右侧按钮选择文件夹...")
+	// 保留 selectedFolder, 但清除其他所有内容
 	t.resetForNewScan()
-	t.updateStatus("已清除，请重新选择文件夹并开始。", false)
+	if t.selectedFolder != "" {
+		t.updateStatus("已清除列表，可按“开始”重新扫描当前文件夹或选择新文件夹。", false)
+	} else {
+		t.updateStatus("已清除，请重新选择文件夹并开始。", false)
+	}
 }
+
 func (t *imageBrowserTool) resetForNewScan() {
 	if t.isRunning {
 		t.toggle()
@@ -528,12 +554,45 @@ func (t *imageBrowserTool) handleDrop(uri fyne.URI) {
 	}
 	t.handleNewFolder(path)
 }
+
 func (t *imageBrowserTool) handleNewFolder(path string) {
+	if t.isRunning {
+		t.toggle() // 如果正在播放, 先暂停
+	}
 	t.resetForNewScan()
 	t.selectedFolder = path
 	t.folderLabel.SetText(path)
-	t.updateStatus("文件夹已更新，请点击“开始”播放。", false)
+	t.updateStatus("正在扫描图片...", false)
+	t.setFormEnabled(false)
+
+	go func() {
+		scanErr := t.scanImages()
+		fyne.Do(func() {
+			t.setFormEnabled(true)
+			if scanErr != nil {
+				t.updateStatus(fmt.Sprintf("扫描失败: %v", scanErr), true)
+				return
+			}
+			if len(t.imagePaths) == 0 {
+				t.updateStatus("未在该文件夹下找到任何支持的图片。", true)
+				return
+			}
+
+			t.prevButton.Enable()
+			t.nextButton.Enable()
+			t.fullscreenBtn.Enable()
+			t.clearButton.Enable()
+			t.updateDirAccordion()
+
+			if t.currentPlayMode == PlayModeOrder {
+				t.showImageAtIndex(0)
+			} else {
+				t.showRandomImage()
+			}
+		})
+	}()
 }
+
 func (t *imageBrowserTool) updateDisplayState() {
 	if t.displayWidget == nil || t.dropHint == nil || t.imageHostContainer == nil {
 		return
@@ -546,9 +605,7 @@ func (t *imageBrowserTool) updateDisplayState() {
 	} else {
 		t.dropHint.Show()
 	}
-	if container, ok := t.imageHostContainer.(*fyne.Container); ok {
-		container.Refresh()
-	}
+	t.imageHostContainer.Refresh()
 }
 func (t *imageBrowserTool) updateDirAccordion() {
 	if t.contentSplit == nil {
@@ -643,8 +700,6 @@ func (t *imageBrowserTool) toggleFullscreen() {
 	t.fullscreenWin = win
 	win.SetOnClosed(func() { t.fullscreenWin = nil })
 	win.SetContent(t.fullscreenImage)
-
-	// ** 修改: 扩展全屏窗口的键盘监听 **
 	win.Canvas().SetOnTypedKey(func(key *fyne.KeyEvent) {
 		switch key.Name {
 		case fyne.KeyEscape:
@@ -655,7 +710,6 @@ func (t *imageBrowserTool) toggleFullscreen() {
 			t.showNextImage()
 		}
 	})
-
 	win.SetFullScreen(true)
 	win.Show()
 }
